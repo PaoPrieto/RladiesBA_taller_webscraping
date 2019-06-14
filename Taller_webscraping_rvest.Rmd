@@ -1,0 +1,241 @@
+---
+title: "RladiesBA - Intro a Web Scraping con rvest"
+output: html_notebook
+---
+
+
+1. Empecemos:
+Chequeemos nuestro directorio actual de trabajo:
+
+```{r}
+getwd()
+```
+
+
+1.1. Si deseamos cambiar el directorio busquemos el que deseamos setear y 
+Definamos nuestro nuevo Directorio de trabajo cambiando <MiPath>
+```{r}
+#setwd("<MiPath>/Rladies_taller_webscraping")
+```
+
+
+
+2. Carguemos las librerias que usaremos:
+Rvest: Para leer la página web
+Lubridate: Para trabajar facilmente con fechas
+Tidyverse: Set de paquetes para trabajar con datos
+Scales: Nos ayudará con las escalas de los gráficos
+
+```{r}
+library(rvest)
+library(lubridate)
+library(tidyverse)
+library(scales)
+```
+
+
+3. Definamos la url de la pagina con la que trabajaremos, en este caso SpotifyCharts Argentina
+```{r}
+url <- "https://spotifycharts.com/regional/ar/daily/"
+```
+
+
+4. Lista de urls con su respectiva fecha para hacer nuestro webScraping
+```{r}
+#fechas <- seq(as.Date("2017/01/01"), as.Date("2019/05/31"), by = "day")
+fechas <- seq(as.Date("2019/06/10"), as.Date("2019/06/15"), by = "day")
+ConcatenarUrl <- function(x){
+  urlCompleta <- paste0(url,x)
+  urlCompleta
+}  
+
+urlFinal <- ConcatenarUrl(fechas)
+```
+
+
+5. Creamos nuestra función principal para obtener los datos deseados de la pagina
+```{r}
+SpotifyChartsScrape <- function(x){
+  pagina <- x
+  posicion <- pagina %>% 
+    read_html() %>% html_nodes('.chart-table-position') %>% html_text() %>% as.data.frame()
+  cancion <- pagina %>% 
+    read_html() %>% 
+    html_nodes('strong') %>% 
+    html_text() %>% 
+    as.data.frame()
+  artista <- pagina %>% 
+    read_html() %>% 
+    html_nodes('.chart-table-track span') %>% 
+    html_text() %>% 
+    as.data.frame()
+  reproducciones <- pagina %>% 
+    read_html() %>% 
+    html_nodes('td.chart-table-streams') %>% 
+    html_text() %>% 
+    as.data.frame()
+  fecha <- pagina %>% 
+    read_html() %>% 
+    html_nodes('.responsive-select~ .responsive-select+ .responsive-select .responsive-select-value') %>%
+    html_text() %>% 
+    as.data.frame()
+    
+#combinamos posicion, cancion, artista, reproducciones, fecha y lo convertimos en un tibble
+  listaDia <- cbind(posicion, cancion, artista, reproducciones, fecha) 
+  names(listaDia) <- c("Posicion", "Cancion", "Artista", "Reproducciones", "Fecha") 
+  listaDia <- data.frame(lapply(listaDia, as.character), stringsAsFactors=FALSE)
+  return(listaDia)
+}
+
+#testfuncion <- SpotifyChartsScrape(urlFinal[1])
+
+```
+
+6. Hacemos webScraping con un bucle for para evitar perder el tiempo invertido del scraping, en caso de que una de las páginas haga timeout o falle
+
+```{r}
+
+logPaginas <- vector("list", length(urlFinal))
+miTibble <- list()
+
+for (i in seq_along(urlFinal)) {
+  if (!(urlFinal[i] %in% names(logPaginas))) {
+    cat(paste("Trabajando en: ", urlFinal[i], "...."))
+    ok <- FALSE
+    contador <- 0
+    while (ok == FALSE & contador <= 5) {
+      contador <- contador + 1
+      salida <- tryCatch({ SpotifyChartsScrape(urlFinal[i])
+                          },error = function(e) {
+                                    Sys.sleep(2)
+                                    e
+                                    }
+                )
+      if ("error" %in% class(salida)) {
+        cat("!")
+      } else {
+        ok <- TRUE
+        cat(" Finalizado")
+        miTibble[[i]] <- salida
+        names(logPaginas)[i] <- urlFinal[i]
+      }
+    }
+    cat("\n")
+  }
+} 
+```
+
+7. Armemos nuestro Tibble completo. En este caso hicimos web scraping de 5 dias, 200*5 = 1000
+
+```{r}
+spotifyTibble <- do.call(rbind, miTibble)   #Final tibble 5 columnas & (200 filas * 5 dias) = 1000
+```
+
+
+8. Guardemos nuestra lista en un archivo csv
+```{r}
+write.csv(spotifyTibble,"MiArchivoWebScraping.csv", row.names = TRUE)
+```
+
+
+9. Carguemos los datos de SpotifyCharts Argentina de 2018 para analizarlos
+```{r}
+spotifyTemp <- read.csv("SpotifyChartsAR2018.csv", encoding = "latin")
+spotifyTemp <- data.frame(lapply(spotifyTemp, as.character), stringsAsFactors=FALSE)
+spotify <- spotifyTemp[,-1] 
+```
+
+
+10. Hagamos un poco de limpieza a los datos. Eliminaremos el by de la columna Artista. Eliminaremos las "," de la columna reproducciones y la convertiremos a numerico. Y por ultimo convertiremos la columna fecha en formato fecha, y a partir de esta crearemos las columnas día de la semana y mes.
+```{r}
+spotify <- spotify %>% 
+  mutate( Artista = gsub("by ", "", Artista), #gsub funciona como un reemplazo
+          Reproducciones = gsub(",", "", Reproducciones), 
+          Reproducciones = as.numeric(Reproducciones), 
+          Fecha = as.Date(spotify$Fecha, "%m/%d/%Y"),
+          DiaSemana = wday(Fecha, label = TRUE),#lubridate: obtine el componente dia de una fecha
+          Mes = month(Fecha, label = TRUE)
+  ) 
+```
+
+
+11. Por Reproducciones
+```{r}
+porReproducciones <- spotify %>% 
+  group_by(Cancion) %>%
+  summarise(totalReproducciones = sum(Reproducciones)) %>% 
+  arrange(desc(totalReproducciones)) %>%
+  top_n(10) %>%
+  print()
+
+#Esta linea saca los feat en parentesis para mejorar el grafico
+#porReproducciones <-  porReproducciones %>% mutate( Cancion = gsub("\\s*\\([^\\)]+\\)","",Cancion))
+
+porReproducciones %>%
+  ggplot(aes(reorder(Cancion, totalReproducciones), y = totalReproducciones)) +
+  geom_col(fill = "sky blue") +
+  #geom_label_repel(aes(label = total), size = 3) +
+  coord_flip() +
+  scale_y_continuous(labels = unit_format(scale = 1, unit = "Rep"))
+```
+
+12. Por Artista
+```{r}
+
+porArtista <- spotify %>% 
+  group_by(Artista) %>%
+  summarise(totalArtista = sum(Reproducciones)) %>% 
+  arrange(desc(totalArtista)) %>% 
+  top_n(20) %>%
+  print()
+
+porArtista %>%
+  ggplot(aes(reorder(Artista, totalArtista), y = totalArtista)) +
+  geom_col(fill = "sky blue") +
+  #geom_label_repel(aes(label = TotalStreams), size = 3) +
+  coord_flip() +
+  scale_y_continuous(labels = unit_format(scale = 1, unit = "rep"))+
+  labs(title = 'AR 2018 | Artista con más reproducciones',
+       x = "Artistas",
+       y = "Total Reproducciones")
+```
+
+
+13. Por Día de la semana
+```{r}
+porDiaDeLaSemana <- spotify %>% 
+  group_by(DiaSemana) %>%
+  summarise(totalReproduccionesDia = sum(Reproducciones)) %>% 
+  arrange(desc(totalReproduccionesDia)) %>% 
+  print()
+
+ggplot(data=porDiaDeLaSemana, aes(x=DiaSemana, y=totalReproduccionesDia, group=1)) +
+  geom_line(linetype = "dashed")+
+  geom_point()+
+  scale_y_continuous(labels = unit_format(scale = 1, unit = "Rep"))+
+  labs(title = 'AR 2018 | Reproducciones por dia de la semana', 
+       x = "Dia de la semana",
+       y = "Total Reproucciones")
+
+
+```
+
+
+14. Por Mes
+```{r}
+porMes <- spotify %>% 
+  group_by(Mes) %>%
+  summarise(totalReproduccionesMes = sum(Reproducciones)) %>% 
+  arrange(desc(totalReproduccionesMes)) %>% 
+  print()
+
+ggplot(data=porMes, aes(x=Mes, y=totalReproduccionesMes, group=1)) +
+  geom_line(linetype = "dashed")+
+  geom_point()+
+  scale_y_continuous(labels = unit_format(scale = 1, unit = "Rep"))+
+  labs(title = 'AR 2018 | Mes con mayores reproducciones', 
+       x = "Mes",
+       y = "Total Reproducciones")
+
+```
+
